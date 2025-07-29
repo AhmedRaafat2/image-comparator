@@ -4,7 +4,7 @@
 
   <groupId>io.github.ahmedraafat2</groupId>
   <artifactId>image-comparator</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.2</version>
   <packaging>jar</packaging>
 
   <name>image-comparator</name>

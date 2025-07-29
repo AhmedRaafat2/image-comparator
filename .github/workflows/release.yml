@@ -1,0 +1,82 @@
+name: Release to GitHub & Maven Central
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build and package
+        run: mvn clean package source:jar javadoc:jar -DskipTests
+
+      - name: Import GPG Key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --yes --import
+          gpg --list-keys
+
+      - name: Prepare variables
+        id: vars
+        run: |
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          GROUP_PATH="io/github/ahmedraafat2/image-comparator/$VERSION"
+          echo "target_path=target/$GROUP_PATH" >> $GITHUB_OUTPUT
+
+      - name: Create final path and sign + checksum
+        run: |
+          VERSION="${{ steps.vars.outputs.VERSION }}"
+          FINAL_PATH="target/io/github/ahmedraafat2/image-comparator/$VERSION"
+          mkdir -p "$FINAL_PATH"
+
+          # Copy artifacts
+          cp target/image-comparator-$VERSION.jar "$FINAL_PATH/"
+          cp target/image-comparator-$VERSION-javadoc.jar "$FINAL_PATH/"
+          cp target/image-comparator-$VERSION-sources.jar "$FINAL_PATH/"
+          cp pom.xml "$FINAL_PATH/image-comparator-$VERSION.pom"
+
+          cd "$FINAL_PATH"
+
+          # Sign JARs and POM
+          for file in *.jar *.pom; do
+            gpg --batch --yes --armor --pinentry-mode loopback \
+              --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
+              --output "$file.asc" --detach-sign "$file"
+          done
+
+          # Create clean-format checksums (hash only, no filename)
+          for file in *.jar *.pom; do
+            md5sum "$file" | awk '{ print $1 }' > "$file.md5"
+            sha1sum "$file" | awk '{ print $1 }' > "$file.sha1"
+          done
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.vars.outputs.target_path }}/*
+
+      - name: Create zip bundle
+        run: |
+          cd target
+          zip -r ../image-comparator-bundle.zip io
+
+      - name: Upload bundle to Maven Central
+        run: |
+          curl -u "${{ secrets.MAVEN_CENTRAL_USERNAME }}:${{ secrets.MAVEN_CENTRAL_TOKEN }}" \
+            -X POST "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC" \
+            -F "bundle=@image-comparator-bundle.zip"

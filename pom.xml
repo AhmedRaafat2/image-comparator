@@ -4,12 +4,12 @@
 
   <groupId>io.github.ahmedraafat2</groupId>
   <artifactId>image-comparator</artifactId>
-  <version>1.0.65</version>
+  <version>1.0.0</version>
   <packaging>jar</packaging>
 
   <name>image-comparator</name>
-  <description>Utility library for scroll gestures in Appium</description>
-  <url>https://github.com/ahmedraafat2/appium-scroll-utils</url>
+  <description>Utility library for Image comparison</description>
+  <url>https://github.com/ahmedraafat2/image-comparator</url>
 
 
   <licenses>
@@ -28,9 +28,9 @@
   </developers>
 
   <scm>
-    <connection>scm:git:https://github.com/ahmedraafat2/appium-scroll-utils.git</connection>
-    <developerConnection>scm:git:ssh://git@github.com/ahmedraafat2/appium-scroll-utils.git</developerConnection>
-    <url>https://github.com/ahmedraafat2/appium-scroll-utils</url>
+    <connection>scm:git:https://github.com/ahmedraafat2/image-comparator.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/ahmedraafat2/image-comparator.git</developerConnection>
+    <url>https://github.com/ahmedraafat2/image-comparator</url>
     <tag>HEAD</tag>
   </scm>
 

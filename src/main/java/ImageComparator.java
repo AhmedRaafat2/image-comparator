@@ -28,41 +28,56 @@ public class ImageComparator {
     }
 
     /**
-     * Compares two images pixel by pixel and highlights any visual differences using red circles.
-     * A composite image is saved if differences are detected.
+     * Compares two images and saves a difference image if the mismatch exceeds a given threshold.
+     * <p>
+     * If one of the images is missing (either reference or current), it will be replaced with a white image of the same size
+     * (based on the existing image). If both are missing, two white images of default size (1920x1080) will be created.
+     * </p>
      *
-     * @param referenceImagePath Path to the reference image
-     * @param currentImagePath   Path to the current (actual) image
-     * @param differenceImagePath      Path to save the result image (reference + actual + diff)
-     * @param threshold          Matching threshold (e.g., 0.99 means 99% match required)
-     * @return {@code true} if the images match within the threshold, otherwise {@code false}
+     * @param referenceImagePath           Path to the reference (baseline) image.
+     * @param currentImagePath             Path to the current image to be compared.
+     * @param differenceImagePath          Path to save the visual diff image if images don't match.
+     * @param differenceThresholdPercentage The allowed percentage of pixel difference (e.g., 5.0 means 5% is allowed).
+     * @return true if the images are considered a match (i.e., difference is within threshold); false otherwise.
      */
-    public boolean compareAndSaveDiffIfNotMatch(String referenceImagePath, String currentImagePath, String differenceImagePath, double threshold) {
-
-        // 🟢 Load images from file system
+    public boolean compareAndSaveDiffIfNotMatch(
+            String referenceImagePath,
+            String currentImagePath,
+            String differenceImagePath,
+            double differenceThresholdPercentage
+    ) {
+        // Load images from file
         Mat reference = Imgcodecs.imread(referenceImagePath);
         Mat current = Imgcodecs.imread(currentImagePath);
 
-        // Validate image loading
-        if (reference.empty() || current.empty()) {
-            System.out.println("❌ Failed to load one or both images.");
-            return false;
+        boolean refMissing = reference.empty();
+        boolean curMissing = current.empty();
+
+        // Handle missing images
+        if (refMissing && curMissing) {
+            System.out.println("⚠️ كلا الصورتين غير موجودتين. سيتم إنشاء صور بيضاء للمقارنة.");
+            reference = Mat.ones(1920, 1080, CvType.CV_8UC3);
+            reference.setTo(new Scalar(255, 255, 255));
+
+            current = Mat.ones(1920, 1080, CvType.CV_8UC3);
+            current.setTo(new Scalar(255, 255, 255));
+        } else if (refMissing) {
+            System.out.println("⚠️ صورة المرجع غير موجودة. سيتم إنشاء صورة بيضاء بنفس حجم الحالية.");
+            reference = Mat.ones(current.rows(), current.cols(), current.type());
+            reference.setTo(new Scalar(255, 255, 255));
+        } else if (curMissing) {
+            System.out.println("⚠️ الصورة الحالية غير موجودة. سيتم إنشاء صورة بيضاء بنفس حجم المرجع.");
+            current = Mat.ones(reference.rows(), reference.cols(), reference.type());
+            current.setTo(new Scalar(255, 255, 255));
         }
 
-        // 🟢 Resize images if dimensions differ
+        // Resize if sizes don't match
         if (!reference.size().equals(current.size())) {
-            System.out.println("⚠️ Image sizes differ. Resizing to match...");
-
-            Size targetSize = new Size(
-                    Math.min(reference.width(), current.width()),
-                    Math.min(reference.height(), current.height())
-            );
-
-            Imgproc.resize(reference, reference, targetSize);
-            Imgproc.resize(current, current, targetSize);
+            System.out.println("⚠️ Image sizes differ. Resizing 'current' image to match 'reference'...");
+            Imgproc.resize(current, current, reference.size());
         }
 
-        // 🟢 Compute absolute difference between the two images
+        // Compute absolute difference between the two images
         Mat diff = new Mat();
         Core.absdiff(reference, current, diff);
 
@@ -70,63 +85,73 @@ public class ImageComparator {
         Mat gray = new Mat();
         Imgproc.cvtColor(diff, gray, Imgproc.COLOR_BGR2GRAY);
 
-        // Apply binary threshold to highlight non-zero differences
+        // Threshold the grayscale image to highlight different pixels
         Mat binary = new Mat();
-        Imgproc.threshold(gray, binary, 1, 255, Imgproc.THRESH_BINARY);
+        Imgproc.threshold(gray, binary, 1.0, 255.0, Imgproc.THRESH_BINARY);
 
         // Count non-zero (different) pixels
-        int nonZero = Core.countNonZero(binary);
-        double totalPixels = binary.rows() * binary.cols();
-        double differencePercentage = (nonZero / totalPixels) * 100;
+        int nonZeroPixels = Core.countNonZero(binary);
+        double totalPixels = (double) binary.rows() * binary.cols();
+        double differencePercentage = (nonZeroPixels / totalPixels) * 100.0;
 
-        System.out.printf("📊 Difference percentage: %.5f%% (%d pixels)%n", differencePercentage, nonZero);
+        // Print statistics
+        System.out.printf("📊 Difference percentage: %.5f%% (%d different pixels)%n", differencePercentage, nonZeroPixels);
 
-        // Determine if images match within the allowed threshold
-        boolean isMatch = differencePercentage <= (100 - threshold * 100);
+        // Determine if the images are within acceptable difference
+        boolean isMatch = differencePercentage <= differenceThresholdPercentage;
 
-        // 🟢 If not matched, prepare visual diff image
         if (!isMatch) {
+            System.out.println("❌ Images do not match. Generating difference image...");
 
-            // Ensure output directory exists
+            // Ensure parent directory exists
             File diffFile = new File(differenceImagePath);
             File parentDir = diffFile.getParentFile();
-            if (!parentDir.exists()) {
-                boolean created = parentDir.mkdirs();
-                if (created) {
+            if (parentDir != null && !parentDir.exists()) {
+                if (parentDir.mkdirs()) {
                     System.out.println("📂 Created directory: " + parentDir.getAbsolutePath());
                 } else {
                     System.out.println("❌ Failed to create directory: " + parentDir.getAbsolutePath());
                 }
             }
 
-            // 🟢 Extract contours (areas with differences)
+            // Detect and draw contours (highlight differences with circles)
             List<MatOfPoint> contours = new ArrayList<>();
             Mat hierarchy = new Mat();
             Imgproc.findContours(binary, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
-            // 🟢 Draw red circles around the different regions on the current image
             for (MatOfPoint contour : contours) {
                 Point center = new Point();
                 float[] radius = new float[1];
-                MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
-                Imgproc.minEnclosingCircle(contour2f, center, radius);
-                Imgproc.circle(current, center, (int) radius[0], new Scalar(0, 0, 255), 2);
+                Imgproc.minEnclosingCircle(new MatOfPoint2f(contour.toArray()), center, radius);
+                Imgproc.circle(current, center, (int) radius[0], new Scalar(0, 0, 255), 2); // Red circle
+                contour.release();
             }
+            hierarchy.release();
 
-            // 🟢 Create a side-by-side composite image (reference | current | diff)
+            // Create a combined image showing: reference | current | diff
             Mat combined = new Mat(reference.rows(), reference.cols() * 3, reference.type());
             reference.copyTo(combined.colRange(0, reference.cols()));
             current.copyTo(combined.colRange(reference.cols(), reference.cols() * 2));
             diff.copyTo(combined.colRange(reference.cols() * 2, reference.cols() * 3));
 
-            // Save the composite diff image
-            boolean saved = Imgcodecs.imwrite(differenceImagePath, combined);
-            if (saved) {
-                System.out.println("❌ Images differ - Diff image saved to: " + differenceImagePath);
+            // Save the combined image
+            if (Imgcodecs.imwrite(differenceImagePath, combined)) {
+                System.out.println("✅ Diff image saved to: " + differenceImagePath);
             } else {
-                System.out.println("❌ Images differ - Failed to save diff image.");
+                System.out.println("❌ Failed to save diff image.");
             }
+
+            combined.release();
+        } else {
+            System.out.println("✅ Images match within the given threshold.");
         }
+
+        // Clean up memory
+        reference.release();
+        current.release();
+        diff.release();
+        gray.release();
+        binary.release();
 
         return isMatch;
     }

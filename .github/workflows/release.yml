@@ -1,82 +1,171 @@
 name: Release to GitHub & Maven Central
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 1.1.0; do not include the v prefix)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-comparator-release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout code
+      - name: Check out selected branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release input
+        env:
+          VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "Run this workflow from a branch, not a tag."
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version must look like 1.2.3 or 1.2.3-rc.1 (without a v prefix)."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists. Published versions cannot be reused."
+            exit 1
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+          cache: maven
 
-      - name: Build and package
-        run: mvn clean package source:jar javadoc:jar -DskipTests
-
-      - name: Import GPG Key
+      - name: Check publishing secrets are configured
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
         run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --yes --import
-          gpg --list-keys
-
-      - name: Prepare variables
-        id: vars
-        run: |
-          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          GROUP_PATH="io/github/ahmedraafat2/image-comparator/$VERSION"
-          echo "target_path=target/$GROUP_PATH" >> $GITHUB_OUTPUT
-
-      - name: Create final path and sign + checksum
-        run: |
-          VERSION="${{ steps.vars.outputs.VERSION }}"
-          FINAL_PATH="target/io/github/ahmedraafat2/image-comparator/$VERSION"
-          mkdir -p "$FINAL_PATH"
-
-          # Copy artifacts
-          cp target/image-comparator-$VERSION.jar "$FINAL_PATH/"
-          cp target/image-comparator-$VERSION-javadoc.jar "$FINAL_PATH/"
-          cp target/image-comparator-$VERSION-sources.jar "$FINAL_PATH/"
-          cp pom.xml "$FINAL_PATH/image-comparator-$VERSION.pom"
-
-          cd "$FINAL_PATH"
-
-          # Sign JARs and POM
-          for file in *.jar *.pom; do
-            gpg --batch --yes --armor --pinentry-mode loopback \
-              --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
-              --output "$file.asc" --detach-sign "$file"
+          set -euo pipefail
+          for name in GPG_PRIVATE_KEY GPG_PASSPHRASE CENTRAL_USERNAME CENTRAL_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required Actions secret for ${name}. See the README release instructions."
+              exit 1
+            fi
           done
+      - name: Set the project version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: mvn --batch-mode org.codehaus.mojo:versions-maven-plugin:2.19.1:set "-DnewVersion=$VERSION" -DgenerateBackupPoms=false
 
-          # Create clean-format checksums (hash only, no filename)
-          for file in *.jar *.pom; do
+      - name: Test and build release artifacts
+        run: mvn --batch-mode clean verify
+
+      - name: Save release version in the selected branch
+        id: release_commit
+        env:
+          VERSION: ${{ inputs.version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pom.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: release v${VERSION}"
+            git push origin "HEAD:$BRANCH"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Import release signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Assemble, sign, and checksum Maven Central bundle
+        id: bundle
+        env:
+          VERSION: ${{ inputs.version }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          final_path="target/io/github/ahmedraafat2/image-comparator/$VERSION"
+          mkdir -p "$final_path"
+          cp "target/image-comparator-$VERSION.jar" "$final_path/"
+          cp "target/image-comparator-$VERSION-sources.jar" "$final_path/"
+          cp "target/image-comparator-$VERSION-javadoc.jar" "$final_path/"
+          cp pom.xml "$final_path/image-comparator-$VERSION.pom"
+          for file in "$final_path"/*.jar "$final_path"/*.pom; do
+            gpg --batch --yes --armor --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" --output "$file.asc" --detach-sign "$file"
             md5sum "$file" | awk '{ print $1 }' > "$file.md5"
             sha1sum "$file" | awk '{ print $1 }' > "$file.sha1"
           done
+          cd target
+          zip -qr ../image-comparator-bundle.zip io
+          echo "release_path=$final_path" >> "$GITHUB_OUTPUT"
 
-      - name: Upload to GitHub Releases
+      - name: Upload bundle to Maven Central and wait for publication
+        env:
+          CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CENTRAL_USERNAME" || -z "$CENTRAL_TOKEN" ]]; then
+            echo "Missing Maven Central credentials. Add MAVEN_CENTRAL_USERNAME and MAVEN_CENTRAL_TOKEN repository secrets."
+            exit 1
+          fi
+          auth="$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_TOKEN" | base64 -w 0)"
+          deployment_id="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${auth}" \
+            -F "bundle=@image-comparator-bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=image-comparator-$VERSION&publishingType=AUTOMATIC")"
+          echo "Sonatype deployment ID: $deployment_id"
+
+          for attempt in $(seq 1 60); do
+            status_json="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${auth}" \
+              -X POST "https://central.sonatype.com/api/v1/publisher/status?id=${deployment_id}")"
+            state="$(printf '%s' "$status_json" | jq -r 'if type == "array" then .[0].deploymentState else .deploymentState end')"
+            echo "Maven Central deployment state: $state"
+            case "$state" in
+              PUBLISHED) exit 0 ;;
+              FAILED)
+                printf '%s' "$status_json" | jq .
+                exit 1
+                ;;
+              VALIDATED)
+                echo "Bundle validated but not automatically published; check Central Portal settings."
+                printf '%s' "$status_json" | jq .
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "Timed out waiting for Maven Central. Check the deployment in the Central Portal."
+          exit 1
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.vars.outputs.target_path }}/*
-
-      - name: Create zip bundle
-        run: |
-          cd target
-          zip -r ../image-comparator-bundle.zip io
-
-      - name: Upload bundle to Maven Central
-        run: |
-          curl -u "${{ secrets.MAVEN_CENTRAL_USERNAME }}:${{ secrets.MAVEN_CENTRAL_TOKEN }}" \
-            -X POST "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC" \
-            -F "bundle=@image-comparator-bundle.zip"
+          tag_name: v${{ inputs.version }}
+          name: Image Comparator v${{ inputs.version }}
+          target_commitish: ${{ steps.release_commit.outputs.sha }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.bundle.outputs.release_path }}/*
+            image-comparator-bundle.zip

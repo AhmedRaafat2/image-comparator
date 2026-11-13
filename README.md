@@ -4,7 +4,7 @@ Java library for pixel-level image comparison. It reports changed-pixel counts a
 
 ## Requirements
 
-- Java 8 or newer
+- Java 17 or newer
 - Maven
 
 ## Add the dependency
@@ -44,7 +44,64 @@ System.out.println("Changed pixels: " + result.differentPixels());
 System.out.println("Difference: " + result.differencePercent() + "%");
 ~~~
 
-The diagnostic image is written only when the allowed difference is exceeded. Its size is three times the input width by the input height.
+The diagnostic image is written when the allowed difference is exceeded or either input is missing. It contains three panels: reference, current image with red marks, and a grayscale difference. Its size is three times the input width by the input height.
+
+Both inputs must use the same filename extension. Dimensions must match by default; the resize policies are explicit opt-ins. If an input cannot be decoded, the diagnostic uses a white panel labeled `Image not found` in its place (two such panels if both inputs are missing). When a diagnostic is written, the library also writes a reduced JPEG beside it using the `-compressed.jpg` suffix, at up to 1200 pixels wide and JPEG quality 80. `ComparisonResult.compressedDiagnosticImage()` returns that path.
+
+## Compare images and save a report
+
+This example writes a three-panel diagnostic and a reduced JPEG when the images differ or an input is missing. The input paths must use the same file extension. By default, their pixel dimensions must also match.
+
+~~~java
+import io.github.ahmedraafat2.imagecomparator.ImageComparator;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+public class CompareImages {
+    public static void main(String[] args) throws IOException {
+        Path reference = Paths.get("screenshots/reference.png");
+        Path actual = Paths.get("screenshots/current.png");
+        Path diagnostic = Paths.get("build/reports/page-diff.png");
+
+        ImageComparator comparator = new ImageComparator();
+        ImageComparator.ComparisonOptions options =
+                ImageComparator.ComparisonOptions.builder()
+                        .allowedDifferencePercent(0.02)
+                        .pixelThreshold(0)
+                        .sizeMismatchPolicy(ImageComparator.SizeMismatchPolicy.FAIL)
+                        .build();
+
+        ImageComparator.ComparisonResult result =
+                comparator.compare(reference, actual, diagnostic, options);
+
+        if (result.matches()) {
+            System.out.println("Images match within the allowed difference.");
+        } else {
+            System.out.println("Images differ.");
+            System.out.println("Diagnostic: " + result.diagnosticImage());
+            System.out.println("Reduced JPEG: " + result.compressedDiagnosticImage());
+            System.out.println("Difference: " + result.differencePercent() + "%");
+        }
+    }
+}
+~~~
+
+## Resize an image for reports
+
+`ImageResizer` reduces or enlarges an image to a target width while keeping its aspect ratio. It creates missing output directories and throws an `IOException` if the input cannot be read or output cannot be written.
+
+~~~java
+import io.github.ahmedraafat2.imagecomparator.ImageResizer;
+import java.nio.file.Paths;
+
+ImageResizer.resizeToWidth(
+    Paths.get("screenshots/full.png"),
+    Paths.get("reports/preview.png"),
+    800
+);
+~~~
 
 ## Configure the comparison
 
@@ -67,7 +124,7 @@ pixelThreshold applies independently to each BGR channel. A pixel counts as chan
 
 ## API
 
-- compare(reference, actual) returns a result without writing an image.
+- compare(reference, actual) returns a result without writing files. Pass a diagnostic output path to create the three-panel image and its compressed copy.
 - compare(reference, actual, options) compares with custom thresholds and policies.
 - compare(reference, actual, output, options) also writes the three-panel diagnostic on mismatch.
 - ComparisonResult provides matches(), differentPixels(), totalPixels(), differencePercent(), dimensions, and the diagnostic path.
@@ -76,33 +133,10 @@ The original default-package methods compareAndSaveDiffIfNotMatch(...) and areIm
 
 ## Image formats
 
-Images are decoded and encoded by OpenCV. Available formats depend on the codecs in the OpenCV distribution and the file extension used for output. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs can vary. Unsupported or missing inputs fail with an exception rather than being treated as matching blank images.
+Images are decoded and encoded by OpenCV. Available formats depend on the codecs in the OpenCV distribution and the file extension used for output. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs can vary. Unsupported or missing inputs are treated as missing images and make the comparison fail. If a diagnostic output path is supplied, the missing panel is shown in white with the label `Image not found`.
 
 ## Build
 
 ~~~shell
 mvn test
 ~~~
-## Publish a release
-
-The release workflow is started manually; it does not publish on every push or tag.
-
-1. Push the code you want to release to the branch you intend to release from.
-2. In GitHub, open **Actions** → **Release to GitHub & Maven Central** → **Run workflow**.
-3. Select that branch and enter a version such as 1.1.0 without the v.
-4. Run the workflow.
-
-The workflow validates the version and checks that its vVERSION tag is unused, updates the Maven version, runs tests and creates source/Javadoc jars, then commits the version change to the selected branch. It signs the Maven artifacts, uploads them to Sonatype Central with automatic publishing, waits for the deployment to reach PUBLISHED, and then creates the matching GitHub Release and tag with the artifacts attached.
-
-Configure these repository Actions secrets before the first release:
-
-| Secret | Value |
-| --- | --- |
-| GPG_PRIVATE_KEY | Armored private signing key |
-| GPG_PASSPHRASE | Passphrase for that private key |
-| MAVEN_CENTRAL_USERNAME | Username part of a Central Portal user token |
-| MAVEN_CENTRAL_TOKEN | Password part of that user token |
-
-If an upload has reached Maven Central but a later step fails, check the Central Portal before rerunning; Maven Central does not allow reusing a published version.
-
-The Maven Central namespace must be verified and the public GPG key must be available from a key server. Versions already published to Maven Central are immutable; use a new version for every release. If the workflow fails after the version commit, fix the cause and rerun the same version while its Git tag is still unused.

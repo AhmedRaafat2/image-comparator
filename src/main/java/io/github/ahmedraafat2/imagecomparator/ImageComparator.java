@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -24,7 +25,7 @@ public final class ImageComparator {
      * @param referencePath baseline image
      * @param actualPath image to compare
      * @return comparison metrics and match state
-     * @throws IOException if either image cannot be read
+     * @throws IOException if diagnostic output was requested and cannot be written
      */
     public ComparisonResult compare(Path referencePath, Path actualPath) throws IOException {
         return compare(referencePath, actualPath, null, ComparisonOptions.defaults());
@@ -36,33 +37,56 @@ public final class ImageComparator {
      * @param actualPath image to compare
      * @param options comparison thresholds and behavior
      * @return comparison metrics and match state
-     * @throws IOException if either image cannot be read
+     * @throws IOException if diagnostic output was requested and cannot be written
      */
     public ComparisonResult compare(Path referencePath, Path actualPath, ComparisonOptions options) throws IOException {
         return compare(referencePath, actualPath, null, options);
     }
 
     /**
-     * Compares images and writes a diagnostic triptych when the allowed difference is exceeded.
-     * The panels are reference, actual image with red circles, and grayscale difference.
+     * Compares images and writes a diagnostic triptych when they differ or an input is missing.
+     * The panels are reference, actual image with red marks, and grayscale difference. A reduced JPEG copy is also written.
      * @param referencePath baseline image path
      * @param actualPath image path to compare
      * @param diagnosticOutput output path for the three-panel image; null disables output
      * @param options comparison thresholds and behavior
      * @return counts, dimensions, percentage, and match state
      * @throws IOException if an image cannot be read or the diagnostic cannot be written
+     * @throws IllegalArgumentException if extensions differ or dimensions differ under the FAIL size policy
      */
     public ComparisonResult compare(Path referencePath, Path actualPath, Path diagnosticOutput,
                                     ComparisonOptions options) throws IOException {
         Objects.requireNonNull(referencePath, "referencePath");
         Objects.requireNonNull(actualPath, "actualPath");
         Objects.requireNonNull(options, "options");
+        String referenceExtension = extension(referencePath);
+        String actualExtension = extension(actualPath);
+        if (!referenceExtension.equalsIgnoreCase(actualExtension)) {
+            throw new IllegalArgumentException("Image extensions must match: reference=" +
+                    referenceExtension + ", actual=" + actualExtension);
+        }
+
         Mat reference = Imgcodecs.imread(referencePath.toString(), Imgcodecs.IMREAD_COLOR);
         Mat actual = Imgcodecs.imread(actualPath.toString(), Imgcodecs.IMREAD_COLOR);
         Mat diff = new Mat(), mask = new Mat();
+        boolean missingImage = false;
         try {
-            if (reference.empty()) throw new IOException("Unable to read reference image: " + referencePath);
-            if (actual.empty()) throw new IOException("Unable to read actual image: " + actualPath);
+            boolean referenceMissing = reference.empty();
+            boolean actualMissing = actual.empty();
+            missingImage = referenceMissing || actualMissing;
+            if (referenceMissing && actualMissing) {
+                reference.release();
+                actual.release();
+                reference = missingPlaceholder(800, 600);
+                actual = missingPlaceholder(800, 600);
+            } else if (referenceMissing) {
+                reference.release();
+                reference = missingPlaceholder(actual.cols(), actual.rows());
+            } else if (actualMissing) {
+                actual.release();
+                actual = missingPlaceholder(reference.cols(), reference.rows());
+            }
+
             if (!reference.size().equals(actual.size())) {
                 if (options.sizeMismatchPolicy == SizeMismatchPolicy.FAIL) {
                     throw new IllegalArgumentException("Image dimensions differ: reference=" +
@@ -85,12 +109,13 @@ public final class ImageComparator {
             int changed = Core.countNonZero(mask);
             long total = (long) mask.rows() * mask.cols();
             double percent = total == 0 ? 0 : changed * 100.0 / total;
-            boolean matches = percent <= options.allowedDifferencePercent;
-            if (!matches && diagnosticOutput != null) {
-                writeDiagnostic(reference, actual, diff, mask, diagnosticOutput, options);
+            boolean matches = !missingImage && percent <= options.allowedDifferencePercent;
+            Path compressedOutput = null;
+            if ((!matches || missingImage) && diagnosticOutput != null) {
+                compressedOutput = writeDiagnostic(reference, actual, diff, mask, diagnosticOutput, options);
             }
             return new ComparisonResult(matches, reference.cols(), reference.rows(), changed, total, percent,
-                    matches ? null : diagnosticOutput);
+                    matches ? null : diagnosticOutput, compressedOutput);
         } finally {
             reference.release();
             actual.release();
@@ -99,7 +124,30 @@ public final class ImageComparator {
         }
     }
 
-    private static void writeDiagnostic(Mat reference, Mat actual, Mat diff, Mat mask, Path output,
+    private static String extension(Path path) {
+        Path name = path.getFileName();
+        String value = name == null ? "" : name.toString();
+        int dot = value.lastIndexOf('.');
+        if (dot <= 0 || dot == value.length() - 1) {
+            throw new IllegalArgumentException("Image path must have a file extension: " + path);
+        }
+        return value.substring(dot + 1).toLowerCase(Locale.ROOT);
+    }
+
+    private static Mat missingPlaceholder(int width, int height) {
+        Mat placeholder = new Mat(height, width, CvType.CV_8UC3, Scalar.all(255));
+        String label = "Image not found";
+        int font = Imgproc.FONT_HERSHEY_SIMPLEX;
+        double scale = Math.min(1.2, Math.max(0.35, width / 500.0));
+        int thickness = Math.max(1, (int) Math.round(scale * 2));
+        int[] baseline = new int[1];
+        Size textSize = Imgproc.getTextSize(label, font, scale, thickness, baseline);
+        Point origin = new Point(Math.max(2, (width - textSize.width) / 2),
+                Math.max((int) textSize.height + 2, (height + textSize.height) / 2));
+        Imgproc.putText(placeholder, label, origin, font, scale, new Scalar(0, 0, 0), thickness, Imgproc.LINE_AA);
+        return placeholder;
+    }
+    private static Path writeDiagnostic(Mat reference, Mat actual, Mat diff, Mat mask, Path output,
                                         ComparisonOptions options) throws IOException {
         Path absolute = output.toAbsolutePath();
         Path parent = absolute.getParent();
@@ -110,8 +158,10 @@ public final class ImageComparator {
         Mat composite = new Mat();
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Mat contourInput = mask.clone();
+        Mat groupingKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
+        Mat contourInput = new Mat();
         try {
+            Imgproc.dilate(mask, contourInput, groupingKernel);
             Imgproc.findContours(contourInput, contours, hierarchy, Imgproc.RETR_EXTERNAL,
                     Imgproc.CHAIN_APPROX_SIMPLE);
             for (MatOfPoint contour : contours) {
@@ -133,14 +183,26 @@ public final class ImageComparator {
             if (!Imgcodecs.imwrite(absolute.toString(), composite)) {
                 throw new IOException("OpenCV could not write diagnostic image: " + absolute);
             }
+            Path compressed = compressedPath(absolute);
+            int compressedWidth = Math.min(composite.cols(), 1200);
+            ImageResizer.resizeToWidth(absolute, compressed, compressedWidth, 80);
+            return compressed;
         } finally {
             marked.release();
             displayDiff.release();
             composite.release();
             hierarchy.release();
+            groupingKernel.release();
             contourInput.release();
             for (MatOfPoint contour : contours) contour.release();
         }
+    }
+
+    private static Path compressedPath(Path output) {
+        String filename = output.getFileName().toString();
+        int dot = filename.lastIndexOf('.');
+        String base = dot <= 0 ? filename : filename.substring(0, dot);
+        return output.resolveSibling(base + "-compressed.jpg");
     }
 
     /** A pixel is changed when any BGR channel differs by more than pixelThreshold. */
@@ -198,11 +260,13 @@ public final class ImageComparator {
         private final long totalPixels;
         private final double differencePercent;
         private final Path diagnosticImage;
+        private final Path compressedDiagnosticImage;
         private ComparisonResult(boolean matches, int width, int height, int differentPixels, long totalPixels,
-                                 double differencePercent, Path diagnosticImage) {
+                                 double differencePercent, Path diagnosticImage, Path compressedDiagnosticImage) {
             this.matches = matches; this.width = width; this.height = height;
             this.differentPixels = differentPixels; this.totalPixels = totalPixels;
             this.differencePercent = differencePercent; this.diagnosticImage = diagnosticImage;
+            this.compressedDiagnosticImage = compressedDiagnosticImage;
         }
         public boolean matches() { return matches; }
         public int width() { return width; }
@@ -211,6 +275,8 @@ public final class ImageComparator {
         public long totalPixels() { return totalPixels; }
         public double differencePercent() { return differencePercent; }
         public Path diagnosticImage() { return diagnosticImage; }
+        /** Returns the reduced-size JPEG diagnostic, or null when none was created. */
+        public Path compressedDiagnosticImage() { return compressedDiagnosticImage; }
         @Override public String toString() {
             return "ComparisonResult{matches=" + matches + ", differentPixels=" + differentPixels +
                     "/" + totalPixels + ", differencePercent=" + differencePercent + "}";

@@ -6,8 +6,8 @@ import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.Scalar;
 import org.opencv.imgcodecs.Imgcodecs;
-import java.io.IOException;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ImageComparatorTest {
@@ -40,18 +40,54 @@ class ImageComparatorTest {
             assertEquals(36, diagnostic.cols());
             assertEquals(12, diagnostic.rows());
         } finally { diagnostic.release(); }
+        assertTrue(Files.exists(result.compressedDiagnosticImage()));
     }
 
     @Test void readsCommonImageFormats() throws Exception {
-        Path png = image("reference.png", 12, 12);
-        for (String extension : new String[] {"jpg", "bmp"}) {
-            Path other = image("actual." + extension, 12, 12);
-            assertTrue(comparator.compare(png, other).matches(), extension);
+        for (String extension : new String[] {"png", "jpg", "bmp"}) {
+            Path reference = image("reference." + extension, 12, 12);
+            Path actual = image("actual." + extension, 12, 12);
+            assertTrue(comparator.compare(reference, actual).matches(), extension);
         }
     }
-    @Test void unreadableImagesFailInsteadOfMatchingBlankPlaceholders() {
-        assertThrows(IOException.class, () -> comparator.compare(
-                temp.resolve("missing-a.png"), temp.resolve("missing-b.png")));
+    @Test void differentExtensionsAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> comparator.compare(
+                temp.resolve("reference.png"), temp.resolve("actual.jpg")));
+    }
+
+    @Test void oneMissingImageCreatesLabeledTriptychAndCompressedCopy() throws Exception {
+        Path actual = image("actual.png", 500, 250);
+        Path output = temp.resolve("reports/diff.png");
+        ImageComparator.ComparisonResult result = comparator.compare(
+                temp.resolve("missing.png"), actual, output, ImageComparator.ComparisonOptions.defaults());
+        assertFalse(result.matches());
+        assertTrue(Files.exists(output));
+        assertTrue(Files.exists(result.compressedDiagnosticImage()));
+        Mat diagnostic = Imgcodecs.imread(output.toString());
+        try {
+            assertEquals(1500, diagnostic.cols());
+            assertEquals(250, diagnostic.rows());
+        } finally { diagnostic.release(); }
+        Mat compressed = Imgcodecs.imread(result.compressedDiagnosticImage().toString());
+        try {
+            assertEquals(1200, compressed.cols());
+            assertEquals(200, compressed.rows());
+        } finally { compressed.release(); }
+    }
+
+    @Test void bothMissingImagesCreateTwoPlaceholdersAndDiagnostic() throws Exception {
+        Path output = temp.resolve("reports/missing.png");
+        ImageComparator.ComparisonResult result = comparator.compare(
+                temp.resolve("missing-a.png"), temp.resolve("missing-b.png"),
+                output, ImageComparator.ComparisonOptions.defaults());
+        assertFalse(result.matches());
+        assertTrue(Files.exists(output));
+        assertTrue(Files.exists(result.compressedDiagnosticImage()));
+        Mat diagnostic = Imgcodecs.imread(output.toString());
+        try {
+            assertEquals(2400, diagnostic.cols());
+            assertEquals(600, diagnostic.rows());
+        } finally { diagnostic.release(); }
     }
 
     @Test void differentDimensionsFailByDefault() throws Exception {

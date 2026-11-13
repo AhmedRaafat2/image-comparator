@@ -120,7 +120,7 @@ ImageComparator.ComparisonResult result = comparator.compare(
 );
 ~~~
 
-pixelThreshold applies independently to each BGR channel. A pixel counts as changed when any channel differs by more than the threshold. The default is zero, so even a one-level channel change counts. The default size policy is FAIL, avoiding false differences caused by silently stretching pages. For intentional resizing, choose RESIZE_ACTUAL_TO_REFERENCE or RESIZE_BOTH_TO_MINIMUM. The deprecated areImagesSimilar adapter preserves its former minimum-dimension resize behavior.
+pixelThreshold applies independently to each BGR channel. A pixel counts as changed when any channel differs by more than the threshold. The default is zero, so even a one-level channel change counts. The default size policy is FAIL, avoiding false differences caused by silently stretching pages. For intentional resizing, choose RESIZE_ACTUAL_TO_REFERENCE or RESIZE_BOTH_TO_MINIMUM.
 
 ## API
 
@@ -129,11 +129,9 @@ pixelThreshold applies independently to each BGR channel. A pixel counts as chan
 - compare(reference, actual, output, options) also writes the three-panel diagnostic on mismatch.
 - ComparisonResult provides matches(), differentPixels(), totalPixels(), differencePercent(), dimensions, and the diagnostic path.
 
-The original default-package methods compareAndSaveDiffIfNotMatch(...) and areImagesSimilar(...) remain deprecated adapters for source compatibility. New code should use the packaged API above.
-
 ## Image formats
 
-Images are decoded and encoded by OpenCV. Available formats depend on the codecs in the OpenCV distribution and the file extension used for output. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs can vary. Unsupported or missing inputs are treated as missing images and make the comparison fail. If a diagnostic output path is supplied, the missing panel is shown in white with the label `Image not found`.
+Images are decoded and encoded by OpenCV. Inputs are decoded as BGR, so source alpha transparency is not preserved. Available formats depend on the codecs in the OpenCV distribution and the file extension used for output. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs can vary. Unsupported or missing inputs are treated as missing images and make the comparison fail. If a diagnostic output path is supplied, the missing panel is shown in white with the label `Image not found`.
 
 ## Build
 

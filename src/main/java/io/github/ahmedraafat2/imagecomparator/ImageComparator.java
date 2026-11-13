@@ -15,6 +15,7 @@ import java.util.Objects;
 
 /**
  * Pixel-oriented image comparison with optional three-panel diagnostic output.
+ * Input images are decoded as BGR, so source alpha transparency is not preserved.
  * Supported input and output formats depend on the codecs bundled with OpenCV.
  */
 public final class ImageComparator {
@@ -52,7 +53,9 @@ public final class ImageComparator {
      * @param options comparison thresholds and behavior
      * @return counts, dimensions, percentage, and match state
      * @throws IOException if an image cannot be read or the diagnostic cannot be written
+     * @throws NullPointerException if a required path or options object is null
      * @throws IllegalArgumentException if extensions differ or dimensions differ under the FAIL size policy
+     * @throws IllegalArgumentException if the diagnostic output would overwrite either input image
      */
     public ComparisonResult compare(Path referencePath, Path actualPath, Path diagnosticOutput,
                                     ComparisonOptions options) throws IOException {
@@ -66,11 +69,16 @@ public final class ImageComparator {
                     referenceExtension + ", actual=" + actualExtension);
         }
 
-        Mat reference = Imgcodecs.imread(referencePath.toString(), Imgcodecs.IMREAD_COLOR);
-        Mat actual = Imgcodecs.imread(actualPath.toString(), Imgcodecs.IMREAD_COLOR);
-        Mat diff = new Mat(), mask = new Mat();
+        Mat reference = null;
+        Mat actual = null;
+        Mat diff = null;
+        Mat mask = null;
         boolean missingImage = false;
         try {
+            reference = Imgcodecs.imread(referencePath.toString(), Imgcodecs.IMREAD_COLOR);
+            actual = Imgcodecs.imread(actualPath.toString(), Imgcodecs.IMREAD_COLOR);
+            diff = new Mat();
+            mask = new Mat();
             boolean referenceMissing = reference.empty();
             boolean actualMissing = actual.empty();
             missingImage = referenceMissing || actualMissing;
@@ -112,16 +120,34 @@ public final class ImageComparator {
             boolean matches = !missingImage && percent <= options.allowedDifferencePercent;
             Path compressedOutput = null;
             if ((!matches || missingImage) && diagnosticOutput != null) {
+                validateDiagnosticPaths(referencePath, actualPath, diagnosticOutput);
                 compressedOutput = writeDiagnostic(reference, actual, diff, mask, diagnosticOutput, options);
             }
             return new ComparisonResult(matches, reference.cols(), reference.rows(), changed, total, percent,
                     matches ? null : diagnosticOutput, compressedOutput);
+        } catch (CvException e) {
+            throw new IOException("OpenCV failed to compare images " + referencePath + " and " + actualPath, e);
         } finally {
-            reference.release();
-            actual.release();
-            diff.release();
-            mask.release();
+            if (reference != null) reference.release();
+            if (actual != null) actual.release();
+            if (diff != null) diff.release();
+            if (mask != null) mask.release();
         }
+    }
+
+    private static void validateDiagnosticPaths(Path reference, Path actual, Path diagnostic) throws IOException {
+        Path absoluteDiagnostic = diagnostic.toAbsolutePath().normalize();
+        Path compressed = compressedPath(absoluteDiagnostic).toAbsolutePath().normalize();
+        if (sameFileOrPath(absoluteDiagnostic, reference) || sameFileOrPath(absoluteDiagnostic, actual)
+                || sameFileOrPath(compressed, reference) || sameFileOrPath(compressed, actual)) {
+            throw new IllegalArgumentException("Diagnostic output paths must not overwrite either input image");
+        }
+    }
+
+    private static boolean sameFileOrPath(Path first, Path second) throws IOException {
+        Path absoluteSecond = second.toAbsolutePath().normalize();
+        if (first.equals(absoluteSecond)) return true;
+        return Files.exists(first) && Files.exists(absoluteSecond) && Files.isSameFile(first, absoluteSecond);
     }
 
     private static String extension(Path path) {
@@ -153,14 +179,20 @@ public final class ImageComparator {
         Path parent = absolute.getParent();
         if (parent != null) Files.createDirectories(parent);
 
-        Mat marked = actual.clone();
-        Mat displayDiff = new Mat();
-        Mat composite = new Mat();
+        Mat marked = null;
+        Mat displayDiff = null;
+        Mat composite = null;
         List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Mat groupingKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
-        Mat contourInput = new Mat();
+        Mat hierarchy = null;
+        Mat groupingKernel = null;
+        Mat contourInput = null;
         try {
+            marked = actual.clone();
+            displayDiff = new Mat();
+            composite = new Mat();
+            hierarchy = new Mat();
+            groupingKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
+            contourInput = new Mat();
             Imgproc.dilate(mask, contourInput, groupingKernel);
             Imgproc.findContours(contourInput, contours, hierarchy, Imgproc.RETR_EXTERNAL,
                     Imgproc.CHAIN_APPROX_SIMPLE);
@@ -185,15 +217,17 @@ public final class ImageComparator {
             }
             Path compressed = compressedPath(absolute);
             int compressedWidth = Math.min(composite.cols(), 1200);
-            ImageResizer.resizeToWidth(absolute, compressed, compressedWidth, 80);
+            ImageResizer.resizeToWidth(composite, compressed, compressedWidth, 80);
             return compressed;
+        } catch (CvException e) {
+            throw new IOException("OpenCV failed to create diagnostic image: " + absolute, e);
         } finally {
-            marked.release();
-            displayDiff.release();
-            composite.release();
-            hierarchy.release();
-            groupingKernel.release();
-            contourInput.release();
+            if (marked != null) marked.release();
+            if (displayDiff != null) displayDiff.release();
+            if (composite != null) composite.release();
+            if (hierarchy != null) hierarchy.release();
+            if (groupingKernel != null) groupingKernel.release();
+            if (contourInput != null) contourInput.release();
             for (MatOfPoint contour : contours) contour.release();
         }
     }

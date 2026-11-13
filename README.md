@@ -1,69 +1,47 @@
 # Image Comparator
 
-Java library for pixel-level image comparison. It reports changed-pixel counts and percentages, and can save a diagnostic image with three panels: reference, actual image marked with red circles around changed regions, and grayscale difference.
+Java 17+ library for pixel-level image comparison. It reports changed-pixel counts and percentages, and can save a diagnostic image with three panels: the reference, the actual image marked with red circles around changed regions, and a grayscale difference image.
 
 ## Requirements
 
 - Java 17 or newer
-- Maven
+- Maven (for Maven projects)
 
 ## Add the dependency
 
-Maven Central (replace RELEASE_VERSION with the latest release):
+### Maven
 
-~~~xml
+```xml
 <dependency>
-  <groupId>io.github.ahmedraafat2</groupId>
-  <artifactId>image-comparator</artifactId>
-  <version>RELEASE_VERSION</version>
+    <groupId>io.github.ahmedraafat2</groupId>
+    <artifactId>image-comparator</artifactId>
+    <version>1.1.0</version>
 </dependency>
-~~~
+```
 
-Gradle:
+### Gradle
 
-~~~gradle
+```gradle
 dependencies {
-    implementation 'io.github.ahmedraafat2:image-comparator:RELEASE_VERSION'
+    implementation 'io.github.ahmedraafat2:image-comparator:1.1.0'
 }
-~~~
+```
 
-## Quick start
+## Compare two images
 
-~~~java
-import io.github.ahmedraafat2.imagecomparator.ImageComparator;
-import java.nio.file.Paths;
+This example compares a baseline with a newly captured screenshot. It writes the three-panel report and a smaller JPEG when the images differ or an input is missing.
 
-ImageComparator comparator = new ImageComparator();
-ImageComparator.ComparisonResult result = comparator.compare(
-    Paths.get("reference.png"), Paths.get("actual.png"),
-    Paths.get("build/reports/image-diff.png"),
-    ImageComparator.ComparisonOptions.defaults()
-);
-System.out.println("Match: " + result.matches());
-System.out.println("Changed pixels: " + result.differentPixels());
-System.out.println("Difference: " + result.differencePercent() + "%");
-~~~
-
-The diagnostic image is written when the allowed difference is exceeded or either input is missing. It contains three panels: reference, current image with red marks, and a grayscale difference. Its size is three times the input width by the input height.
-
-Both inputs must use the same filename extension. Dimensions must match by default; the resize policies are explicit opt-ins. If an input cannot be decoded, the diagnostic uses a white panel labeled `Image not found` in its place (two such panels if both inputs are missing). When a diagnostic is written, the library also writes a reduced JPEG beside it using the `-compressed.jpg` suffix, at up to 1200 pixels wide and JPEG quality 80. `ComparisonResult.compressedDiagnosticImage()` returns that path.
-
-## Compare images and save a report
-
-This example writes a three-panel diagnostic and a reduced JPEG when the images differ or an input is missing. The input paths must use the same file extension. By default, their pixel dimensions must also match.
-
-~~~java
+```java
 import io.github.ahmedraafat2.imagecomparator.ImageComparator;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 public class CompareImages {
     public static void main(String[] args) throws IOException {
-        Path reference = Paths.get("screenshots/reference.png");
-        Path actual = Paths.get("screenshots/current.png");
-        Path diagnostic = Paths.get("build/reports/page-diff.png");
+        Path reference = Path.of("screenshots/reference.png");
+        Path actual = Path.of("screenshots/current.png");
+        Path report = Path.of("build/reports/page-diff.png");
 
         ImageComparator comparator = new ImageComparator();
         ImageComparator.ComparisonOptions options =
@@ -74,98 +52,145 @@ public class CompareImages {
                         .build();
 
         ImageComparator.ComparisonResult result =
-                comparator.compare(reference, actual, diagnostic, options);
+                comparator.compare(reference, actual, report, options);
 
-        if (result.matches()) {
-            System.out.println("Images match within the allowed difference.");
-        } else {
-            System.out.println("Images differ.");
+        System.out.println("Images match: " + result.matches());
+        System.out.println("Changed pixels: " + result.differentPixels());
+        System.out.println("Difference: " + result.differencePercent() + "%");
+        if (result.diagnosticImage() != null) {
             System.out.println("Diagnostic: " + result.diagnosticImage());
-            System.out.println("Reduced JPEG: " + result.compressedDiagnosticImage());
-            System.out.println("Difference: " + result.differencePercent() + "%");
+            System.out.println("Smaller JPEG: " + result.compressedDiagnosticImage());
         }
     }
 }
-~~~
+```
 
-## Resize an image for reports
+### Parameters in the comparison example
 
-`ImageResizer` reduces or enlarges an image to a target width while keeping its aspect ratio. It creates missing output directories and throws an `IOException` if the input cannot be read or output cannot be written.
+| Parameter | What it controls |
+| --- | --- |
+| `reference` | Path to the baseline image that the actual image is compared against. |
+| `actual` | Path to the new image being checked. |
+| `report` | Where to write the three-panel diagnostic image on a mismatch or missing input. Its parent folders are created if needed. |
+| `allowedDifferencePercent(0.02)` | Maximum percentage of changed pixels that still counts as a match. `0.02` means 0.02 percent. The default is `0.0`. |
+| `pixelThreshold(0)` | Per-channel BGR difference required for a pixel to count as changed. A pixel is marked when any channel differs by more than this value. Range: 0–255; default: `0`. |
+| `sizeMismatchPolicy(FAIL)` | What to do when image dimensions differ. `FAIL` throws an exception; other supported policies are described below. |
 
-~~~java
-import io.github.ahmedraafat2.imagecomparator.ImageResizer;
-import java.nio.file.Paths;
+The report is composed of three panels: reference, actual with red circles around changed regions, and grayscale pixel differences. The library also writes a smaller JPEG beside it with the `-compressed.jpg` suffix, at up to 1200 pixels wide and JPEG quality 80. `compressedDiagnosticImage()` returns that JPEG path.
 
-ImageResizer.resizeToWidth(
-    Paths.get("screenshots/full.png"),
-    Paths.get("reports/preview.png"),
-    800
-);
-~~~
+Both input paths must have the same file extension. By default, image dimensions must also match. If an input is missing or cannot be decoded, its report panel is white and labeled `Image not found`. If both inputs are missing, both panels show that message.
 
-## Compare directories
+## Compare two directories
 
-ImageBatchComparator recursively compares supported images by relative path and file name. It writes a diagnostic image and a compressed JPEG for each mismatch or missing image, then creates summary.json. Supported file extensions are PNG, JPG/JPEG, BMP, TIF/TIFF, and WEBP; other files are ignored. Reports must be outside both input directories.
+`ImageBatchComparator` walks both directory trees recursively and pairs images by relative path and filename (without the extension). It writes a diagnostic for each different or missing image and a `summary.json` report.
 
-~~~java
+```java
 import io.github.ahmedraafat2.imagecomparator.BatchComparisonResult;
 import io.github.ahmedraafat2.imagecomparator.ImageBatchComparator;
 import io.github.ahmedraafat2.imagecomparator.ImageComparator;
 
+import java.io.IOException;
 import java.nio.file.Path;
 
-ImageComparator.ComparisonOptions options = ImageComparator.ComparisonOptions.defaults();
-BatchComparisonResult result = new ImageBatchComparator().compareDirectories(
-    Path.of("screenshots/reference"),
-    Path.of("screenshots/current"),
-    Path.of("build/reports"),
-    options
-);
+public class CompareDirectories {
+    public static void main(String[] args) throws IOException {
+        Path referenceDirectory = Path.of("screenshots/reference");
+        Path actualDirectory = Path.of("screenshots/current");
+        Path reportsDirectory = Path.of("build/reports/image-comparison");
+        ImageComparator.ComparisonOptions options = ImageComparator.ComparisonOptions.defaults();
 
-System.out.printf(
-    "Compared %d image paths: %d matched, %d different, %d missing.%n",
-    result.totalFiles(),
-    result.matchedCount(),
-    result.differentCount(),
-    result.missingReferenceCount() + result.missingActualCount()
-);
-System.out.println("Summary: " + result.summaryFile());
-~~~
+        BatchComparisonResult result = new ImageBatchComparator().compareDirectories(
+                referenceDirectory, actualDirectory, reportsDirectory, options);
 
-The result also reports extension and dimension mismatches, ambiguous names, and per-file errors. Files are matched by relative path and name without the extension; if more than one file has the same relative name with different extensions, the result is marked ambiguous.
-## Configure the comparison
+        System.out.printf("Compared %d image paths: %d matched, %d different.%n",
+                result.totalFiles(), result.matchedCount(), result.differentCount());
+        System.out.println("Summary: " + result.summaryFile());
+    }
+}
+```
 
-~~~java
+| Parameter | What it controls |
+| --- | --- |
+| `referenceDirectory` | Root folder containing baseline images. |
+| `actualDirectory` | Root folder containing images to compare against the baseline. |
+| `reportsDirectory` | Destination for per-image diagnostics and `summary.json`. It must be outside both input trees. |
+| `options` | Pixel thresholds and size mismatch behavior. Use `ComparisonOptions.defaults()` for exact pixel comparison and fail-on-size-mismatch behavior. |
+
+Supported extensions are PNG, JPG/JPEG, BMP, TIF/TIFF, and WEBP. Other files are ignored. If both trees contain the same relative filename with different extensions, the item is reported as an extension mismatch. If multiple files share a relative filename without extensions, the item is marked ambiguous. Missing files, size mismatches, and processing errors are recorded in the result and JSON summary.
+
+## Tune comparison behavior
+
+```java
 ImageComparator.ComparisonOptions options = ImageComparator.ComparisonOptions.builder()
-    .allowedDifferencePercent(0.02) // accept up to 0.02% changed pixels
-    .pixelThreshold(0)              // any channel difference greater than this value counts
-    .minimumRegionArea(0)            // keep tiny marks such as dots and diacritics
-    .circleThickness(2)
-    .sizeMismatchPolicy(ImageComparator.SizeMismatchPolicy.FAIL)
-    .build();
+        .allowedDifferencePercent(0.02)
+        .pixelThreshold(3)
+        .minimumRegionArea(4)
+        .circleThickness(2)
+        .sizeMismatchPolicy(ImageComparator.SizeMismatchPolicy.RESIZE_ACTUAL_TO_REFERENCE)
+        .build();
+```
 
-ImageComparator.ComparisonResult result = comparator.compare(
-    Paths.get("reference.png"), Paths.get("actual.png"),
-    Paths.get("build/reports/diff.png"), options
-);
-~~~
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `allowedDifferencePercent(double)` | Acceptable changed-pixel percentage, from 0 to 100. A comparison matches when its measured percentage is at or below this value. | `0.0` |
+| `pixelThreshold(double)` | Per-channel BGR threshold, from 0 to 255. A pixel changes if any channel difference is greater than the threshold. | `0.0` |
+| `minimumRegionArea(double)` | Minimum contour area, in pixels, to draw as a red circle in the diagnostic. Smaller regions are omitted from the markup; they still count toward the difference metrics. | `0.0` |
+| `circleThickness(int)` | Thickness of red circles drawn around changed regions. Must be at least 1. | `2` |
+| `sizeMismatchPolicy(SizeMismatchPolicy)` | Behavior when image widths or heights differ. | `FAIL` |
 
-pixelThreshold applies independently to each BGR channel. A pixel counts as changed when any channel differs by more than the threshold. The default is zero, so even a one-level channel change counts. The default size policy is FAIL, avoiding false differences caused by silently stretching pages. For intentional resizing, choose RESIZE_ACTUAL_TO_REFERENCE or RESIZE_BOTH_TO_MINIMUM.
+Available size policies:
 
-## API
+- `FAIL`: throw `IllegalArgumentException` if dimensions differ.
+- `RESIZE_ACTUAL_TO_REFERENCE`: resize the actual image to the reference dimensions before comparing.
+- `RESIZE_BOTH_TO_MINIMUM`: resize both images to the smaller width and smaller height before comparing.
 
-- compare(reference, actual) returns a result without writing files. Pass a diagnostic output path to create the three-panel image and its compressed copy.
-- compare(reference, actual, options) compares with custom thresholds and policies.
-- compare(reference, actual, output, options) also writes the three-panel diagnostic on mismatch.
-- ImageBatchComparator.compareDirectories(...) compares two directory trees and writes a JSON summary.
-- ComparisonResult provides matches(), differentPixels(), totalPixels(), differencePercent(), dimensions, and the diagnostic path.
+## Resize an image
+
+`ImageResizer.resizeToWidth` keeps the original aspect ratio. For JPEG output, an optional quality value controls compression.
+
+```java
+import io.github.ahmedraafat2.imagecomparator.ImageResizer;
+
+import java.io.IOException;
+import java.nio.file.Path;
+
+public class ResizeImage {
+    public static void main(String[] args) throws IOException {
+        ImageResizer.resizeToWidth(
+                Path.of("screenshots/full.png"),
+                Path.of("reports/preview.jpg"),
+                800,
+                85
+        );
+    }
+}
+```
+
+| Parameter | What it controls |
+| --- | --- |
+| First `Path` | Input image to resize. |
+| Second `Path` | Destination file. The extension selects the output format; parent folders are created if needed. |
+| `800` | Target width in pixels. Height is calculated to preserve the aspect ratio. Must be positive. |
+| `85` | Optional JPEG quality from 0 (smaller file, lower quality) to 100 (larger file, higher quality). It applies only to `.jpg`/`.jpeg` output. If omitted, the library uses `85`. |
+
+The output path may be the same as the input path to replace the image. The path-based API decodes images as BGR, so it does not preserve alpha transparency. Shrinking uses area interpolation; enlarging uses cubic interpolation.
+
+## Results and overloads
+
+- `compare(reference, actual)` compares with default options and does not write a report.
+- `compare(reference, actual, options)` compares with the provided options and does not write a report.
+- `compare(reference, actual, report, options)` also writes the three-panel report and smaller JPEG when the comparison differs or an input is missing.
+- `ImageBatchComparator.compareDirectories(referenceDirectory, actualDirectory, reportsDirectory, options)` recursively compares image trees and writes `summary.json`.
+- `ComparisonResult.matches()` is `true` only when both images exist and the difference is within the allowed percentage.
+- `differentPixels()`, `totalPixels()`, `differencePercent()`, `width()`, and `height()` return comparison metrics.
+- `diagnosticImage()` and `compressedDiagnosticImage()` return output paths, or `null` when no report was created.
 
 ## Image formats
 
-Images are decoded and encoded by OpenCV. Inputs are decoded as BGR, so source alpha transparency is not preserved. Available formats depend on the codecs in the OpenCV distribution and the file extension used for output. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs can vary. Unsupported or missing inputs are treated as missing images and make the comparison fail. If a diagnostic output path is supplied, the missing panel is shown in white with the label `Image not found`.
+Images are decoded and encoded by OpenCV. Supported formats depend on the codecs in the OpenCV distribution. PNG, JPEG, and BMP are covered by the project tests for the bundled distribution; other codecs may vary. Input extensions must match. Unsupported or missing inputs are treated as missing images.
 
-## Build
+## Build from source
 
-~~~shell
-mvn test
-~~~
+```shell
+mvn clean verify
+```

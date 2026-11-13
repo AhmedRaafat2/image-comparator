@@ -2,6 +2,7 @@ package io.github.ahmedraafat2.imagecomparator;
 
 import nu.pattern.OpenCV;
 import org.opencv.core.*;
+import org.opencv.core.CvException;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 

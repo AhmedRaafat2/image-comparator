@@ -97,7 +97,7 @@ public final class ImageComparator {
 
             if (!reference.size().equals(actual.size())) {
                 if (options.sizeMismatchPolicy == SizeMismatchPolicy.FAIL) {
-                    throw new IllegalArgumentException("Image dimensions differ: reference=" +
+                    throw new ImageSizeMismatchException("Image dimensions differ: reference=" +
                             reference.cols() + "x" + reference.rows() + ", actual=" +
                             actual.cols() + "x" + actual.rows());
                 }
@@ -285,6 +285,14 @@ public final class ImageComparator {
         }
     }
 
+    /**
+     * Indicates that two images have different dimensions while the size mismatch policy is FAIL.
+     */
+    public static final class ImageSizeMismatchException extends IllegalArgumentException {
+        ImageSizeMismatchException(String message) {
+            super(message);
+        }
+    }
     public enum SizeMismatchPolicy { FAIL, RESIZE_ACTUAL_TO_REFERENCE, RESIZE_BOTH_TO_MINIMUM }
 
     public static final class ComparisonResult {

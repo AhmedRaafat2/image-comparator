@@ -103,6 +103,36 @@ ImageResizer.resizeToWidth(
 );
 ~~~
 
+## Compare directories
+
+ImageBatchComparator recursively compares supported images by relative path and file name. It writes a diagnostic image and a compressed JPEG for each mismatch or missing image, then creates summary.json. Supported file extensions are PNG, JPG/JPEG, BMP, TIF/TIFF, and WEBP; other files are ignored. Reports must be outside both input directories.
+
+~~~java
+import io.github.ahmedraafat2.imagecomparator.BatchComparisonResult;
+import io.github.ahmedraafat2.imagecomparator.ImageBatchComparator;
+import io.github.ahmedraafat2.imagecomparator.ImageComparator;
+
+import java.nio.file.Path;
+
+ImageComparator.ComparisonOptions options = ImageComparator.ComparisonOptions.defaults();
+BatchComparisonResult result = new ImageBatchComparator().compareDirectories(
+    Path.of("screenshots/reference"),
+    Path.of("screenshots/current"),
+    Path.of("build/reports"),
+    options
+);
+
+System.out.printf(
+    "Compared %d image paths: %d matched, %d different, %d missing.%n",
+    result.totalFiles(),
+    result.matchedCount(),
+    result.differentCount(),
+    result.missingReferenceCount() + result.missingActualCount()
+);
+System.out.println("Summary: " + result.summaryFile());
+~~~
+
+The result also reports extension and dimension mismatches, ambiguous names, and per-file errors. Files are matched by relative path and name without the extension; if more than one file has the same relative name with different extensions, the result is marked ambiguous.
 ## Configure the comparison
 
 ~~~java
@@ -127,6 +157,7 @@ pixelThreshold applies independently to each BGR channel. A pixel counts as chan
 - compare(reference, actual) returns a result without writing files. Pass a diagnostic output path to create the three-panel image and its compressed copy.
 - compare(reference, actual, options) compares with custom thresholds and policies.
 - compare(reference, actual, output, options) also writes the three-panel diagnostic on mismatch.
+- ImageBatchComparator.compareDirectories(...) compares two directory trees and writes a JSON summary.
 - ComparisonResult provides matches(), differentPixels(), totalPixels(), differencePercent(), dimensions, and the diagnostic path.
 
 ## Image formats

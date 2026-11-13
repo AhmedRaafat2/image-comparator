@@ -118,7 +118,8 @@ jobs:
           zip -qr ../image-comparator-bundle.zip io
           echo "release_path=$final_path" >> "$GITHUB_OUTPUT"
 
-      - name: Upload bundle to Maven Central and wait for publication
+      - name: Upload bundle to Maven Central
+        id: upload
         env:
           CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
@@ -134,30 +135,8 @@ jobs:
             -H "Authorization: Bearer ${auth}" \
             -F "bundle=@image-comparator-bundle.zip" \
             "https://central.sonatype.com/api/v1/publisher/upload?name=image-comparator-$VERSION&publishingType=AUTOMATIC")"
-          echo "Sonatype deployment ID: $deployment_id"
-
-          for attempt in $(seq 1 60); do
-            status_json="$(curl --fail-with-body --silent --show-error \
-              -H "Authorization: Bearer ${auth}" \
-              -X POST "https://central.sonatype.com/api/v1/publisher/status?id=${deployment_id}")"
-            state="$(printf '%s' "$status_json" | jq -r 'if type == "array" then .[0].deploymentState else .deploymentState end')"
-            echo "Maven Central deployment state: $state"
-            case "$state" in
-              PUBLISHED) exit 0 ;;
-              FAILED)
-                printf '%s' "$status_json" | jq .
-                exit 1
-                ;;
-              VALIDATED)
-                echo "Bundle validated but not automatically published; check Central Portal settings."
-                printf '%s' "$status_json" | jq .
-                exit 1
-                ;;
-            esac
-            sleep 10
-          done
-          echo "Timed out waiting for Maven Central. Check the deployment in the Central Portal."
-          exit 1
+          echo "Maven Central accepted the deployment. Publication will continue independently."
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

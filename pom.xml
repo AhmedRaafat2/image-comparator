@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.ahmedraafat2</groupId>
   <artifactId>image-comparator</artifactId>
-  <version>1.1.0</version>
+  <version>1.0.4</version>
   <name>image-comparator</name>
   <description>Pixel-oriented image comparison with diagnostic output</description>
   <url>https://github.com/AhmedRaafat2/image-comparator</url>
